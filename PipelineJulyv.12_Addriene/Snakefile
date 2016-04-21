@@ -1,0 +1,839 @@
+# Title: Mapping and counting of mouse tumor RNAs
+# Author: Mateusz Kuzak
+# Modified by: Ioannis Moustakas, i.moustakas@uva.nl
+
+######### ************* ###############
+
+# Align on RNA familirs and use count tables for small derived. July version.
+
+######### ************* ###############
+
+
+
+import os
+from snakemake.utils import R
+# Mateuzs suggested importing sh to make things easier for awk scripts 
+# sh might have to be installed in virtual environment. 
+### from sh import awk
+
+SEQDB="/zfs/datastore0/group_root/MAD-RBAB/05_Reference-db/" 
+CUSTOM_DB="/zfs/datastore0/group_root/MAD-RBAB/03_RBAB-internal/MAD1000-P013-cfRNA_mouse_tumors/MAD1000-P013-E002_2015_setup_inventory_rdekker2/Results/databases/"
+
+# Use a scratch dir for temporary storage of intermediate pipeline results 
+# after succesfull running of the pipeline this directory can be removed to conserve 
+# space (on genseq also scrarch dirs are not backed up) 
+
+SCRATCH_DIR="./scratch" 
+
+# species for which pipeline is run
+# Mouse (Mus musculus)  this time 
+
+SPEC = "mmu"
+
+# reference spikein sequences
+# clipping at 40 no longer done
+SPIKES_REF = SEQDB+"RBAB/spikes-smallRNAseq/SSPK_v3_removeOldSeq"
+
+
+# rRNA reference
+rRNA_REF=CUSTOM_DB+"rRNA/rRNAdb_AV"
+
+# tRNA reference
+tRNA_REF=CUSTOM_DB+"tRNA/tRNA_mmu"
+
+# Addded SPEC variable 
+MIRNA_REF = SEQDB+"external/"+SPEC+"/RNA/miRNA/hairpin21"
+
+# Bos Taurus miRNA DB
+BT_MIRNA_REF = CUSTOM_DB + "miRBase_bta/miRBase_bta_hairpin"
+
+# Bos Taurus tRNA DB
+BT_TRNA_REF= CUSTOM_DB+"tRNA_BT/tRNA_bta"
+
+MIRNA_ANNOTATIONS = SEQDB+"external/RNA/mirBase21/miRNA.dat"
+
+# cDNA (mRNA)
+cDNA_REF = SEQDB+"external/mmu/DNA/cDNA/Mus_musculus.GRCm38.75.cdna.all"
+
+# piRNA database  
+PIRNA_REF = CUSTOM_DB+"si-piRNA/si-pi-ncRNA_mmu"
+
+# sno/sn RNA
+SNOSNRNA_REF = CUSTOM_DB+"sn-snoRNA/sn-snoRNA_mmu"
+
+# nRNA reference
+nRNA_REF = CUSTOM_DB+"nRNA/nRNAdb"
+
+# put_ncRNA reference
+PUT_ncRNA_REF= CUSTOM_DB+"/putncRNA/putncRNA"
+
+# experiment directory in which while analysis is conducted
+ANALYSIS_HOME = "./"
+
+# the file name to save the report (output statistics)
+REPORT_FILE="reportPipelineRerunSpikes.txt"
+
+# directory with raw reads in fastq format file names assumed to be sample names fastq
+
+FQ_DIR = "/zfs/datastore0/group_root/MAD-RBAB/03_RBAB-internal/MAD1000-P013-cfRNA_mouse_tumors/MAD1000-P013-E002_2015_setup_inventory_rdekker2/Data-QC/basicQCIntracell/scratch/raw"
+# I only want some of the files, so
+SAMPLES = ["int367_FS_DL", "int368_CS_DL", "int370_FS_DL", "int374_CS_DL", "int393_CS_JL", "int405_FS_JL", "int407_FS_JL", "int409_CS_JL"]
+
+#SAMPLES =  [s[:-6] for s in os.listdir(FQ_DIR) if s.endswith(".fastq")]
+
+
+# alignments di
+BAM_DIR = "./bam"
+
+# spike count table directory
+SPIKE_COUNTS_DIR = "./spikes/counts"
+
+
+# length of the reads used for alignment to miRNA
+# MIRNA_TRIMMED_LEN = 40 ### No trimming on maximum length
+MIRNA_MIN_LEN = "10" # filter out reads smaller than 15
+
+# bowtie settings
+# alignment score differs between 'local' and 'end-to-end' alignment
+# this is why -score-min differs for 10% mm
+#
+# Removed --ignore-quals : it is "not set" in protocol 
+#  -D removed not in protocol
+#   left in -t altough not in protocol is seems to be harmless
+SPIKE_BOWTIE_PARAMS_LIST = [
+    "-L 6",                      # seed length
+    "-i S,0,0.5",                # interval between extracted seeds
+    "--norc",                    # do not align to reverse strand
+    "--score-min L,-1,-0.6",     # -1-0.6*read_length -- 10% mismatches allowed
+    "-p 16"                      # number of threads
+]
+SPIKE_BOWTIE_PARAMS = " ".join(SPIKE_BOWTIE_PARAMS_LIST)
+
+RRNA_TRNA_BOWTIE_PARAMS_LIST = [
+    "--norc",                    # do not align to reverse strand
+    "-p 16"                      # number of threads
+]
+RRNA_TRNA_BOWTIE_PARAMS = " ".join(RRNA_TRNA_BOWTIE_PARAMS_LIST)
+
+# Set the miRNa parametes as in the file 
+MIRNA_BOWTIE_PARAMS_LIST = [
+    "-L 6",                      # seed length
+    "-i S,0,0.5",                # interval between extracted seeds
+    "--norc",                    # do not align to reverse strand
+    "--rdg 1,2",		 # open and extend penalties relaxed due to proton errors
+    "--score-min L,-1,-0.6",     # -1-0.6*read_length -- 10% mismatches allowed
+    "-p 16"                      # number of threads
+]
+
+## Old miRNA parameters
+    #"-L 6"                       # seed length
+    #"--ignore-quals",            # treat as all qualities would be max possible
+    #"--norc",                    # do not align to reverse strand
+    #"--local",                   # allow for softcliping
+    #"--score-min L,0,1.2",       # 1.2*read_length -- 10% mismatches allowed
+    #"-p 6"                       # number of threads
+    
+MIRNA_BOWTIE_PARAMS = " ". join(MIRNA_BOWTIE_PARAMS_LIST)
+
+# nRNA parameters
+NRNA_BOWTIE_PARAMS_LIST = [
+    "-L 6",                      # seed length
+    "-i S,0,0.5",                # interval between extracted seeds
+    "--rdg 1,2",		 # open and extend penalties relaxed due to proton errors
+    "--score-min L,-1,-0.6",     # -1-0.6*read_length -- 10% mismatches allowed
+    "-p 16"                      # number of threads
+]
+
+NRNA_BOWTIE_PARAMS = " ". join(NRNA_BOWTIE_PARAMS_LIST)
+
+# Copy of spike in parameters
+PIRNA_SNOSN_BOWTIE_PARAMS_LIST = [
+    "-L 6",                      # seed length
+    "-i S,0,0.5",                # interval between extracted seeds
+    "--score-min L,-1,-0.6",     # -1-0.6*read_length -- 10% mismatches allowed
+    "-t",                        # print clock time
+    "-p 16"                      # number of threads
+]
+# old piRNA parameters
+    #"-L 6",                      # seed length
+    #"--ignore-quals",            # treat as all qualities would be max possible
+    #"--norc",                    # do not align to reverse strand
+    #"--score-min L,-1,-0.6",     # -1-0.6*read_length -- 10% mismatches allowed
+    #"-D 20",                     # consecutive seed extension attempts
+    #"-t",                        # print clock time
+    #"-p 16"                      # number of threads
+    
+PIRNA_SNOSN_BOWTIE_PARAMS = " ".join(PIRNA_SNOSN_BOWTIE_PARAMS_LIST)
+
+
+rule all:
+    input: "./miRNA/count/CountTable_mirna.txt",
+           "./spikes/counts/norm_count.png",
+           "./spikes/counts/CountTable_norm_spike.txt",
+           #("./nRNA/{sample}_no_nRNA.fastq".format(sample=s) for s in SAMPLES),
+           ("./put_ncRNA/{sample}_no_put_ncRNA.fastq".format(sample=s) for s in SAMPLES),
+           ("./BTtRNA/count/CountTable_tRNA.txt".format(sample=s) for s in SAMPLES),
+           ("./BTmiRNA/count/CountTable_mirna.txt".format(sample=s) for s in SAMPLES),
+           ("./tRNA/count/CountTable_tRNA.txt".format(sample=s) for s in SAMPLES),
+           ("./si_piRNA/{sample}_si_pirna_alnCount.txt".format(sample=s) for s in SAMPLES),
+           ("./sn_snoRNA/{sample}_sn_snoRNAmappedCount.txt".format(sample=s) for s in SAMPLES),
+           ("./tRNA/{sample}_tRNA_alnCount.txt".format(sample=s) for s in SAMPLES),
+           ("./rRNA/{sample}_rRNA_alnCount.txt".format(sample=s) for s in SAMPLES),
+           ("./nRNA/{sample}_nRNAmappedCount.txt".format(sample=s) for s in SAMPLES),
+           ("./cDNA/{sample}_cDNA_alnCount.txt".format(sample=s) for s in SAMPLES),
+           ("./BTtRNA/{sample}_tRNA_alnCount.txt".format(sample=s) for s in SAMPLES),
+           ("./BTmiRNA/{sample}_mirna_alnCount.txt".format(sample=s) for s in SAMPLES),
+           ("./put_ncRNA/{sample}_put_ncRNA_alnCount.txt".format(sample=s) for s in SAMPLES)
+      
+
+RRNADB = SEQDB+"external/"+ SPEC +"/RNA/rRNA/rRNA_dre"
+RRNASAMS = [ "mapped/" + s + "_rRNAmapped.sam" for s in SAMPLES]
+
+# Do not need the count tables for the moment
+# RRNABAMS  = [ "mapped/"+ s + "_rRNAmapped_sorted.bam" for s in SAMPLES]
+# RRNA_COUNTTABLES = [ "mapped/"+ s + "_rRNA_count.tsv" for s in SAMPLES]
+
+#rule all:
+#    input: "./spikes/counts/norm_count.png",
+#           "./spikes/counts/CountTable_norm_spike.txt",
+#	   RRNA_COUNTTABLES,
+#	   RRNABAMS
+
+
+
+
+
+
+# sam to bam, sort and index
+rule put_ncRNA_sam2bam_sort_index:
+    input: "./put_ncRNA/{sample}_put_ncRNA_align.sam"
+    output: "./put_ncRNA/{sample}_put_ncRNA_aln_sorted.bam",
+            "./put_ncRNA/{sample}_put_ncRNA_aln_sorted.bam.bai",
+	    "./put_ncRNA/{sample}_put_ncRNA_alnCount.txt"
+    params: bam="./put_ncRNA/{sample}_put_ncRNA_aln.bam",
+            sorted_base="./put_ncRNA/{sample}_put_ncRNA_aln_sorted",
+            sorted_bam="./put_ncRNA/{sample}_put_ncRNA_aln_sorted.bam",
+            countAln="./put_ncRNA/{sample}_put_ncRNA_alnCount.txt"
+    message: "Converting << put_ncRNA >> alignments to bam, sorting and indexing."
+    shell:
+        """
+        samtools view -bS {input} > {params.bam}
+        samtools sort {params.bam} {params.sorted_base}
+        samtools index {params.sorted_bam}
+        samtools idxstats {params.sorted_bam} > {params.countAln}
+        """
+ 
+rule extract_non_put_ncRNA_reads: 
+     input: "./put_ncRNA/{sample}_put_ncRNA_align.sam"
+     output: "./put_ncRNA/{sample}_no_put_ncRNA.fastq"
+     message: "creating fastq file excluding put_ncRNA reads"
+     shell:
+        """ 
+        awk '$3=="*" {{printf("@%s\\n%s\\n+%s\\n%s\\n",$1,$10,$1,$11)}}' {input} > {output} 
+        """  
+        
+rule aln_put_ncRNA:
+  """
+  Align filtered sequences on put_ncRNA DB
+  """
+  input: "./BTtRNA/{sample}_notRNA.fastq"
+  output: "./put_ncRNA/{sample}_put_ncRNA_align.sam"
+  params: report_header="{sample}_On_put_ncRNA"
+  message: "Aligning reads to put_ncRNA sequences"
+  shell:
+        """
+        mkdir -p ./put_ncRNA
+        mkdir -p ./put_ncRNA/count
+        bowtie2 {RRNA_TRNA_BOWTIE_PARAMS} -x {PUT_ncRNA_REF} -U {input} -S {output} 2>&1|\
+        python sRNA_tools.py call_build_report --report_header {params.report_header} --report_file_name {REPORT_FILE}
+        """   
+
+
+
+
+# merge BT tRNA tables
+rule merge_BT_tRNA_counts:
+    input: ("./BTtRNA/count/{sample}_trna.csv".format(sample=s) for s in SAMPLES)
+    output: "./BTtRNA/count/CountTable_tRNA.txt"
+    shell: 
+      """
+      python sRNA_tools.py merge_count_tables --dir ./tRNA/count --suffix _trna.csv --out {output}
+      """     
+
+
+# Count the BT tRNA fragments and put them in a table
+rule count_BT_small_der:
+    input: bam="./BTtRNA/{sample}_tRNA_aln_sorted.bam",
+           bai="./BTtRNA/{sample}_tRNA_aln_sorted.bam.bai"
+    output: "./BTtRNA/count/{sample}_trna.csv"
+    message: "Counting BT tRNAs"
+    shell: "python sRNA_tools.py count_small_derived  --bamfile {input.bam} --out {output}"
+
+
+# sam to bam, sort and index
+rule BT_tRNA_sam2bam_sort_index:
+    input: "./BTtRNA/{sample}_tRNA_align.sam"
+    output: "./BTtRNA/{sample}_tRNA_aln_sorted.bam",
+            "./BTtRNA/{sample}_tRNA_aln_sorted.bam.bai",
+	    "./BTtRNA/{sample}_tRNA_alnCount.txt"
+    params: bam="./BTtRNA/{sample}_tRNA_aln.bam",
+            sorted_base="./BTtRNA/{sample}_tRNA_aln_sorted",
+            sorted_bam="./BTtRNA/{sample}_tRNA_aln_sorted.bam",
+            countAln="./BTtRNA/{sample}_tRNA_alnCount.txt"
+    message: "Converting << BT tRNA >> alignments to bam, sorting and indexing."
+    shell:
+        """
+        samtools view -bS {input} > {params.bam}
+        samtools sort {params.bam} {params.sorted_base}
+        samtools index {params.sorted_bam}
+        samtools idxstats {params.sorted_bam} > {params.countAln}
+        """
+ 
+rule extract_non_BTtRNA_reads: 
+     input: "./BTtRNA/{sample}_tRNA_align.sam"
+     output: "./BTtRNA/{sample}_notRNA.fastq"
+     message: "creating fastq file excluding BT tRNA reads"
+     shell:
+        """ 
+        awk '$3=="*" {{printf("@%s\\n%s\\n+%s\\n%s\\n",$1,$10,$1,$11)}}' {input} > {output} 
+        """  
+        
+rule aln_BT_tRNA:
+  """
+  Align filtered sequences on BT tRNA DB
+  """
+  input: "./BTmiRNA/{sample}_no_miRNA.fastq"
+  output: "./BTtRNA/{sample}_tRNA_align.sam"
+  params: report_header="{sample}_On_BT_tRNA"
+  message: "Aligning reads to BT tRNA sequences"
+  shell:
+        """
+        mkdir -p ./BTtRNA
+        mkdir -p ./BTtRNA/count
+        bowtie2 {RRNA_TRNA_BOWTIE_PARAMS} -x {BT_TRNA_REF} -U {input} -S {output} 2>&1|\
+        python sRNA_tools.py call_build_report --report_header {params.report_header} --report_file_name {REPORT_FILE}
+        """   
+
+
+
+rule extract_non_BT_miRNA_reads: 
+     input: "./BTmiRNA/{sample}_mirna_aln.sam"
+     output: "./BTmiRNA/{sample}_no_miRNA.fastq"
+     message: "creating fastq file excluding BT miRNA reads"
+     shell:
+        """ 
+        awk '$3=="*" {{printf("@%s\\n%s\\n+%s\\n%s\\n",$1,$10,$1,$11)}}' {input} > {output} 
+        """  
+
+# mirRNA
+rule merge_BT_miRNA_counts:
+    input: ("./BTmiRNA/count/{sample}_mirna.csv".format(sample=s) for s in SAMPLES)
+    output: "./BTmiRNA/count/CountTable_mirna.txt"
+    shell: 
+      """
+      python sRNA_tools.py merge_count_tables --dir ./miRNA/count --suffix _mirna.csv --out {output}
+      """     
+
+rule BT_miRNA_count:
+    input: bam="./BTmiRNA/{sample}_mirna_aln_sorted.bam",
+           bai="./BTmiRNA/{sample}_mirna_aln_sorted.bam.bai"
+    output: "./BTmiRNA/count/{sample}_mirna.csv"
+    message: "Counting BT miRNAs"
+    shell: "python sRNA_tools.py count_mirnas --dat {MIRNA_ANNOTATIONS} --bamfile {input.bam} --out {output}"
+
+# miRNA sam to bam, sort and index
+rule BT_mirna_sam2bam_sort_index:
+    input: "./BTmiRNA/{sample}_mirna_aln.sam"
+    output: "./BTmiRNA/{sample}_mirna_aln_sorted.bam",
+            "./BTmiRNA/{sample}_mirna_aln_sorted.bam.bai",
+	    "./BTmiRNA/{sample}_mirna_alnCount.txt"
+    params: bam="./BTmiRNA/{sample}_mirna_aln.bam",
+            sorted_base="./BTmiRNA/{sample}_mirna_aln_sorted",
+            sorted_bam="./BTmiRNA/{sample}_mirna_aln_sorted.bam",
+	    countAln="./BTmiRNA/{sample}_mirna_alnCount.txt"
+    message: "Converting BT miRNA alignments to bam, sorting and indexing."
+    shell:
+        """
+        samtools view -bS {input} > {params.bam}
+        samtools sort {params.bam} {params.sorted_base}
+        samtools index {params.sorted_bam}
+	samtools idxstats {params.sorted_bam} > {params.countAln}
+        """
+
+rule aln_BT_miRNA:
+    """
+    Align trimmed sequences to miRNA sequences.
+    """
+    input: "./cDNA/{sample}_no_cDNA.fastq"
+    output: "./BTmiRNA/{sample}_mirna_aln.sam"
+    message: "Aligning reads to BT miRNA sequences."
+    params: report_header="{sample}_On_BT_miRNA"
+    shell: 
+        """
+        mkdir -p ./BTmiRNA
+        mkdir -p ./BTmiRNA/count
+        bowtie2 {MIRNA_BOWTIE_PARAMS} -x {BT_MIRNA_REF} -U {input} -S {output} 2>&1|\
+        python sRNA_tools.py call_build_report --report_header {params.report_header} --report_file_name {REPORT_FILE}
+        """
+
+
+# sam to bam, sort and index
+rule cDNA_sam2bam_sort_index:
+    input: "./cDNA/{sample}_cDNA_align.sam"
+    output: "./cDNA/{sample}_cDNA_aln_sorted.bam",
+            "./cDNA/{sample}_cDNA_aln_sorted.bam.bai",
+	    "./cDNA/{sample}_cDNA_alnCount.txt"
+    params: bam="./cDNA/{sample}_cDNA_aln.bam",
+            sorted_base="./cDNA/{sample}_cDNA_aln_sorted",
+            sorted_bam="./cDNA/{sample}_cDNA_aln_sorted.bam",
+            countAln="./cDNA/{sample}_cDNA_alnCount.txt"
+    message: "Converting << cDNA >> alignments to bam, sorting and indexing."
+    shell:
+        """
+        samtools view -bS {input} > {params.bam}
+        samtools sort {params.bam} {params.sorted_base}
+        samtools index {params.sorted_bam}
+        samtools idxstats {params.sorted_bam} > {params.countAln}
+        """
+ 
+rule extract_non_cDNA_reads: 
+     input: "./cDNA/{sample}_cDNA_align.sam"
+     output: "./cDNA/{sample}_no_cDNA.fastq"
+     message: "creating fastq file excluding cDNA reads"
+     shell:
+        """ 
+        awk '$3=="*" {{printf("@%s\\n%s\\n+%s\\n%s\\n",$1,$10,$1,$11)}}' {input} > {output} 
+        """  
+        
+rule aln_cDNA:
+  """
+  Align filtered sequences on cDNA DB
+  """
+  input: "./nRNA/{sample}_no_nRNA.fastq"
+  output: "./cDNA/{sample}_cDNA_align.sam"
+  params: report_header="{sample}_On_cDNA"
+  message: "Aligning reads to cDNA sequences"
+  shell:
+        """
+        mkdir -p ./cDNA
+        bowtie2 {RRNA_TRNA_BOWTIE_PARAMS} -x {cDNA_REF} -U {input} -S {output} 2>&1|\
+        python sRNA_tools.py call_build_report --report_header {params.report_header} --report_file_name {REPORT_FILE}
+        """   
+
+
+rule extract_nRNA_reads: 
+     input: "./nRNA/{sample}_nRNA_aln.sam"
+     output: "./nRNA/{sample}_no_nRNA.fastq"
+     message: "creating fastq file excluding nRNA reads"
+     shell:
+        """ 
+        awk '$3=="*" {{printf("@%s\\n%s\\n+%s\\n%s\\n",$1,$10,$1,$11)}}' {input} > {output} 
+        """
+
+# nRNA sam to bam, sort and index
+rule nRNA_sam2bam_sort_index:
+    input:  "./nRNA/{sample}_nRNA_aln.sam"
+    output: "./nRNA/{sample}_nRNAmapped.bam",
+            "./nRNA/{sample}_nRNAmapped_sorted.bam",
+            "./nRNA/{sample}_nRNAmapped_sorted.bam.bai",
+	    "./nRNA/{sample}_nRNAmappedCount.txt"
+    params: bam="./nRNA/{sample}_nRNAmapped.bam",
+            sorted_base="./nRNA/{sample}_nRNAmapped_sorted",
+            sorted_bam="./nRNA/{sample}_nRNAmapped_sorted.bam",
+	    countAln="./nRNA/{sample}_nRNAmappedCount.txt"
+    message: "Converting nRNA alignments to bam, sorting and indexing."
+    shell:
+        """
+        samtools view -bS {input} > {params.bam}
+        samtools sort {params.bam} {params.sorted_base}
+        samtools index {params.sorted_bam}
+	samtools idxstats {params.sorted_bam} > {params.countAln}
+        """
+# align to nRNA
+rule map_to_nRNA:
+    input: "./sn_snoRNA/{sample}_no_sn_snoRNA.fastq"
+    output: "./nRNA/{sample}_nRNA_aln.sam"
+    message: "Aligning reads to nRNA sequences."
+    params: report_header="{sample}_nRNA"
+    shell:
+        """
+        mkdir -p ./nRNA
+        bowtie2 {NRNA_BOWTIE_PARAMS} -x {nRNA_REF} -U {input} -S {output} 2>&1 |\
+        python sRNA_tools.py call_build_report --report_header {params.report_header} --report_file_name {REPORT_FILE}
+        """
+
+
+rule extract_non_sn_snoRNA_reads: 
+     input: "./sn_snoRNA/{sample}_sn_snoRNA_aln.sam"
+     output: "./sn_snoRNA/{sample}_no_sn_snoRNA.fastq"
+     message: "creating fastq file excluding sn_snoRNA reads"
+     shell:
+        """ 
+        awk '$3=="*" {{printf("@%s\\n%s\\n+%s\\n%s\\n",$1,$10,$1,$11)}}' {input} > {output} 
+        """
+
+# si_piRNA sam to bam, sort and index
+rule sn_snoRNA_sam2bam_sort_index:
+    input:  "./sn_snoRNA/{sample}_sn_snoRNA_aln.sam"
+
+    output: "./sn_snoRNA/{sample}_sn_snoRNAmapped.bam",
+            "./sn_snoRNA/{sample}_sn_snoRNAmapped_sorted.bam",
+            "./sn_snoRNA/{sample}_sn_snoRNAmapped_sorted.bam.bai",
+	    "./sn_snoRNA/{sample}_sn_snoRNAmappedCount.txt"
+
+    params: bam="./sn_snoRNA/{sample}_sn_snoRNAmapped.bam",
+            sorted_base="./sn_snoRNA/{sample}_sn_snoRNAmapped_sorted",
+            sorted_bam="./sn_snoRNA/{sample}_sn_snoRNAmapped_sorted.bam",
+	    countAln="./sn_snoRNA/{sample}_sn_snoRNAmappedCount.txt"
+    message: "Converting sn_snoRNA alignments to bam, sorting and indexing."
+    shell:
+        """
+        samtools view -bS {input} > {params.bam}
+        samtools sort {params.bam} {params.sorted_base}
+        samtools index {params.sorted_bam}
+	samtools idxstats {params.sorted_bam} > {params.countAln}
+        """
+
+rule map_to_sn_snorna:
+    input: "./si_piRNA/{sample}_no_si_piRNA.fastq"
+    output: "./sn_snoRNA/{sample}_sn_snoRNA_aln.sam"
+    message: "Aligning reads to sn_snoRNA sequences."
+    params: report_header="{sample}_On_sn_snoRNA"
+    shell:
+        """
+        mkdir -p ./sn_snoRNA
+        bowtie2 {PIRNA_SNOSN_BOWTIE_PARAMS} -x {SNOSNRNA_REF} -U {input} -S {output} 2>&1 |\
+        python sRNA_tools.py call_build_report --report_header {params.report_header} --report_file_name {REPORT_FILE}
+        """
+
+rule extract_non_si_piRNA_reads: 
+     input: "./si_piRNA/{sample}_si_pirna_aln.sam"
+     output: "./si_piRNA/{sample}_no_si_piRNA.fastq"
+     message: "creating fastq file excluding si_piRNA reads"
+     shell:
+        """ 
+        awk '$3=="*" {{printf("@%s\\n%s\\n+%s\\n%s\\n",$1,$10,$1,$11)}}' {input} > {output} 
+        """  
+
+# piRNA sam to bam, sort and index
+rule pirna_sam2bam_sort_index:
+    input:  "./si_piRNA/{sample}_si_pirna_aln.sam"
+    output: "./si_piRNA/{sample}_si_pirna_aln.bam",
+            "./si_piRNA/{sample}_si_pirna_aln_sorted.bam",
+            "./si_piRNA/{sample}_si_pirna_aln_sorted.bam.bai",
+	    "./si_piRNA/{sample}_si_pirna_alnCount.txt"
+    params: bam="./si_piRNA/{sample}_si_pirna_aln.bam",
+            sorted_base="./si_piRNA/{sample}_si_pirna_aln_sorted",
+            sorted_bam="./si_piRNA/{sample}_si_pirna_aln_sorted.bam",
+	    countAln="./si_piRNA/{sample}_si_pirna_alnCount.txt"
+    message: "Converting si_piRNA alignments to bam, sorting and indexing."
+    shell:
+        """
+        samtools view -bS {input} > {params.bam}
+        samtools sort {params.bam} {params.sorted_base}
+        samtools index {params.sorted_bam}
+	samtools idxstats {params.sorted_bam} > {params.countAln}
+        """
+
+# piRNA
+rule aln_si_piRNA:
+    input: fq="./miRNA/{sample}_no_miRNA.fastq"
+    output: "./si_piRNA/{sample}_si_pirna_aln.sam"
+    message: "Aligning reads to si_piRNA sequences."
+    params: report_header="{sample}_On_si_piRNA"
+    shell:
+        """
+        bowtie2 {PIRNA_SNOSN_BOWTIE_PARAMS} -x {PIRNA_REF} -U {input.fq} -S {output} 2>&1|\
+        python sRNA_tools.py call_build_report --report_header {params.report_header} --report_file_name {REPORT_FILE}
+        """
+
+rule create_piRNA_dir:
+    output: "./si_piRNA/"
+    shell: "mkdir -p ./si_piRNA/"
+      
+rule extract_non_miRNA_reads: 
+     input: "./miRNA/{sample}_mirna_aln.sam"
+     output: "./miRNA/{sample}_no_miRNA.fastq"
+     message: "creating fastq file excluding miRNA reads"
+     shell:
+        """ 
+        awk '$3=="*" {{printf("@%s\\n%s\\n+%s\\n%s\\n",$1,$10,$1,$11)}}' {input} > {output} 
+        """  
+
+# mirRNA
+rule merge_miRNA_counts:
+    input: ("./miRNA/count/{sample}_mirna.csv".format(sample=s) for s in SAMPLES)
+    output: "./miRNA/count/CountTable_mirna.txt"
+    shell: 
+      """
+      python sRNA_tools.py merge_count_tables --dir ./miRNA/count --suffix _mirna.csv --out {output}
+      """     
+
+rule miRNA_count:
+    input: bam="./miRNA/{sample}_mirna_aln_sorted.bam",
+           bai="./miRNA/{sample}_mirna_aln_sorted.bam.bai"
+    output: "./miRNA/count/{sample}_mirna.csv"
+    message: "Counting miRNAs"
+    shell: "python sRNA_tools.py count_mirnas --dat {MIRNA_ANNOTATIONS} --bamfile {input.bam} --out {output}"
+
+# miRNA sam to bam, sort and index
+rule mirna_sam2bam_sort_index:
+    input: "./miRNA/{sample}_mirna_aln.sam"
+    output: "./miRNA/{sample}_mirna_aln_sorted.bam",
+            "./miRNA/{sample}_mirna_aln_sorted.bam.bai",
+	    "./miRNA/{sample}_mirna_alnCount.txt"
+    params: bam="./miRNA/{sample}_mirna_aln.bam",
+            sorted_base="./miRNA/{sample}_mirna_aln_sorted",
+            sorted_bam="./miRNA/{sample}_mirna_aln_sorted.bam",
+	    countAln="./miRNA/{sample}_mirna_alnCount.txt"
+    message: "Converting miRNA alignments to bam, sorting and indexing."
+    shell:
+        """
+        samtools view -bS {input} > {params.bam}
+        samtools sort {params.bam} {params.sorted_base}
+        samtools index {params.sorted_bam}
+	samtools idxstats {params.sorted_bam} > {params.countAln}
+        """
+
+rule aln_miRNA:
+    """
+    Align trimmed sequences to miRNA sequences.
+    """
+    input: "./rRNA/{sample}_norRNA.fastq"
+    output: "./miRNA/{sample}_mirna_aln.sam"
+    message: "Aligning reads to miRNA sequences."
+    params: report_header="{sample}_On_miRNA"
+    shell: 
+        """
+        mkdir -p ./miRNA
+        mkdir -p ./miRNA/count
+        bowtie2 {MIRNA_BOWTIE_PARAMS} -x {MIRNA_REF} -U {input} -S {output} 2>&1|\
+        python sRNA_tools.py call_build_report --report_header {params.report_header} --report_file_name {REPORT_FILE}
+        """
+ 
+        
+# sam to bam, sort and index
+rule rRNA_sam2bam_sort_index:
+    input: "./rRNA/{sample}_rRNA_align.sam"
+    output: "./rRNA/{sample}_rRNA_aln_sorted.bam",
+            "./rRNA/{sample}_rRNA_aln_sorted.bam.bai",
+	    "./rRNA/{sample}_rRNA_alnCount.txt"
+    params: bam="./rRNA/{sample}_rRNA_aln.bam",
+            sorted_base="./rRNA/{sample}_rRNA_aln_sorted",
+            sorted_bam="./rRNA/{sample}_rRNA_aln_sorted.bam",
+            countAln="./rRNA/{sample}_rRNA_alnCount.txt"
+    message: "Converting << rRNA >> alignments to bam, sorting and indexing."
+    shell:
+        """
+        samtools view -bS {input} > {params.bam}
+        samtools sort {params.bam} {params.sorted_base}
+        samtools index {params.sorted_bam}
+        samtools idxstats {params.sorted_bam} > {params.countAln}
+        """
+ 
+rule extract_non_rRNA_reads: 
+     input: "./rRNA/{sample}_rRNA_align.sam"
+     output: "./rRNA/{sample}_norRNA.fastq"
+     message: "creating fastq file excluding rRNA reads"
+     shell:
+        """ 
+        mkdir -p ./spikes/fastq
+        awk '$3=="*" {{printf("@%s\\n%s\\n+%s\\n%s\\n",$1,$10,$1,$11)}}' {input} > {output} 
+        """  
+        
+rule aln_rRNA:
+  """
+  Align filtered sequences on rRNA DB
+  """
+  input: "./rRNA/{sample}_notRNA.fastq"
+  output: "./rRNA/{sample}_rRNA_align.sam"
+  params: report_header="{sample}_On_rRNA"
+  message: "Aligning reads to rRNA sequences"
+  shell:
+        """
+        bowtie2 {RRNA_TRNA_BOWTIE_PARAMS} -x {rRNA_REF} -U {input} -S {output} 2>&1|\
+        python sRNA_tools.py call_build_report --report_header {params.report_header} --report_file_name {REPORT_FILE}
+        """    
+
+
+# merge tRNA tables
+rule merge_tRNA_counts:
+    input: ("./tRNA/count/{sample}_trna.csv".format(sample=s) for s in SAMPLES)
+    output: "./tRNA/count/CountTable_tRNA.txt"
+    shell: 
+      """
+      python sRNA_tools.py merge_count_tables --dir ./tRNA/count --suffix _trna.csv --out {output}
+      """     
+
+
+# Count the tRNA fragments and put them in a table
+rule count_small_der_tRNA:
+    input: bam="./tRNA/{sample}_tRNA_aln_sorted.bam",
+           bai="./tRNA/{sample}_tRNA_aln_sorted.bam.bai"
+    output: "./tRNA/count/{sample}_trna.csv"
+    message: "Counting tRNAs"
+    shell: "python sRNA_tools.py count_small_derived  --bamfile {input.bam} --out {output}"
+
+
+# sam to bam, sort and index
+rule tRNA_sam2bam_sort_index:
+    input: "./tRNA/{sample}_tRNA_align.sam"
+    output: "./tRNA/{sample}_tRNA_aln_sorted.bam",
+            "./tRNA/{sample}_tRNA_aln_sorted.bam.bai",
+	    "./tRNA/{sample}_tRNA_alnCount.txt"
+    params: bam="./tRNA/{sample}_tRNA_aln.bam",
+            sorted_base="./tRNA/{sample}_tRNA_aln_sorted",
+            sorted_bam="./tRNA/{sample}_tRNA_aln_sorted.bam",
+            countAln="./tRNA/{sample}_tRNA_alnCount.txt"
+    message: "Converting << tRNA >> alignments to bam, sorting and indexing."
+    shell:
+        """
+        samtools view -bS {input} > {params.bam}
+        samtools sort {params.bam} {params.sorted_base}
+        samtools index {params.sorted_bam}
+        samtools idxstats {params.sorted_bam} > {params.countAln}
+        """
+ 
+rule extract_non_tRNA_reads: 
+     input: "./tRNA/{sample}_tRNA_align.sam"
+     output: "./rRNA/{sample}_notRNA.fastq"
+     message: "creating fastq file excluding tRNA reads"
+     shell:
+        """ 
+        mkdir -p ./rRNA
+        awk '$3=="*" {{printf("@%s\\n%s\\n+%s\\n%s\\n",$1,$10,$1,$11)}}' {input} > {output} 
+        """  
+        
+rule aln_tRNA:
+  """
+  Align filtered sequences on tRNA DB
+  """
+  input: "./tRNA/{sample}_filtered.fastq"
+  output: "./tRNA/{sample}_tRNA_align.sam"
+  params: report_header="{sample}_On_tRNA"
+  message: "Aligning reads to tRNA sequences"
+  shell:
+        """
+        bowtie2 {RRNA_TRNA_BOWTIE_PARAMS} -x {tRNA_REF} -U {input} -S {output} 2>&1|\
+        python sRNA_tools.py call_build_report --report_header {params.report_header} --report_file_name {REPORT_FILE}
+        """   
+
+
+# Filter out reads sorter than selected length, AFTER they are aligned on the spike-ins
+rule filter_reads_spikes:
+    input: "./spikes/fastq/{sample}_nospikes.fastq"
+    output: "./tRNA/{sample}_filtered.fastq"
+    params: min_len=MIRNA_MIN_LEN,
+	    sample_id="{sample}"
+    message: "Filtering out reads shorter than %s" % MIRNA_MIN_LEN
+    shell:
+        """
+        mkdir -p ./tRNA
+        python sRNA_tools.py filter_short_reads --input {input} --output {output} --min-len {params.min_len} \
+        --report-file-name {REPORT_FILE} --report-stats True --sample-id {params.sample_id}
+        """
+
+## Added rule to remove reads which mapped to spikes
+# note the repeated {{ to escape variable substitution
+rule extract_non_spike_reads: 
+     input: "./spikes/bam/{sample}_spike_aln.sam"
+     output: "./spikes/fastq/{sample}_nospikes.fastq"
+     message: "creating fastq file excluding spike reads"
+     shell:
+        """ 
+        mkdir -p ./spikes/fastq
+        awk '$3=="*" {{printf("@%s\\n%s\\n+%s\\n%s\\n",$1,$10,$1,$11)}}' {input} > {output} 
+        """ 
+
+# miRNA alignment and counting
+rule create_miRNA_dir:
+    output: "./miRNA"
+    shell: "mkdir -p ./miRNA/trim ./miRNA/bam ./miRNA/counts"
+
+# R command in snakemake don't take input and output
+# putting them into constants
+SPIKE_COUNT = "./spikes/counts/CountTable_size_spike.txt"
+TOTAL_COUNT = os.path.join(SPIKE_COUNTS_DIR, "total_reads.csv")
+COUNT_PNG = "./spikes/counts/count.png",
+NORM_COUNT_PNG = "./spikes/counts/norm_count.png"
+# make spike count plots
+rule spike_count_plots:
+    input: totalcount=os.path.join(SPIKE_COUNTS_DIR, "total_reads.csv"),
+           spikecount="./spikes/counts/CountTable_size_spike.txt"
+    output: countpng="./spikes/counts/count.png",
+            normcountpng="./spikes/counts/norm_count.png"
+    run: R("""
+           library(faradr);
+           png(filename="{COUNT_PNG}");
+           plot(PlotSpikeCounts("{SPIKE_COUNT}"));
+           dev.off();
+           png(filename="{NORM_COUNT_PNG}");
+           plot(PlotNormalSpikeCounts("{SPIKE_COUNT}", "{TOTAL_COUNT}"));
+           dev.off();
+           """)
+             
+# calculate amount of reads per sample for spike normalise plots
+rule total_reads_count:
+   input: "./spikes/counts/CountTable_size_spike.txt"
+   params: fqdir=FQ_DIR,
+           spikedir = SPIKE_COUNTS_DIR
+   output: os.path.join(SPIKE_COUNTS_DIR, "total_reads.csv") 
+   message: "Count nubmer of reads in each sample"
+   shell: "python sRNA_tools.py count_fq_reads --fq-dir {params.fqdir} --count-dir {params.spikedir}"
+
+# spike alignment and counting
+rule spike_count:
+    input: ("./spikes/bam/{sample}_spike_aln_sorted.bam.bai".format(sample=s) for s in SAMPLES)
+    params: basename="_spike_aln_sorted.bam" ,
+            bam_dir="./spikes/bam",
+            count_dir="./spikes/counts"
+    output: "./spikes/counts/CountTable_size_spike.txt",
+            "./spikes/counts/CountTable_norm_spike.txt"
+    message: "Filtering and counting spike reads"
+    shell: "python sRNA_tools.py count_spikes --basename {params.basename} --bam-dir {params.bam_dir} --count-dir {params.count_dir}" 
+
+# spikeRNA sam to bam, sort and index
+rule spikes_sam2bam_sort_index:
+    input: "./spikes/bam/{sample}_spike_aln.sam"
+    output: "./spikes/bam/{sample}_spike_aln_sorted.bam",
+            "./spikes/bam/{sample}_spike_aln_sorted.bam.bai"
+    params: bam="./spikes/bam/{sample}_spike_aln.bam",
+            sorted_base="./spikes/bam/{sample}_spike_aln_sorted",
+            sorted_bam="./spikes/bam/{sample}_spike_aln_sorted.bam"
+    message: "Converting << spike >> alignments to bam, sorting and indexing."
+    shell:
+        """
+        samtools view -bS {input} > {params.bam}
+        samtools sort {params.bam} {params.sorted_base}
+        samtools index {params.sorted_bam}
+        """
+
+# Note the 2>&1 | after bowtie: bowtie spits the alignemt report as stderr. 
+# So I need to redirect it to stdout and then pipe it to python
+rule aln_spikes:
+    """
+    Align sequences to spikes and save bowtie report to ta file
+    """
+    input: FQ_DIR+"/{sample}.fastq"
+    params: report_header="{sample}_On_Spikes"  
+    output: "./spikes/bam/{sample}_spike_aln.sam"
+    message: "Aligning reads to spike sequences."
+    shell: 
+        """
+        bowtie2 {SPIKE_BOWTIE_PARAMS} -x {SPIKES_REF} -U {input} -S {output} 2>&1| python sRNA_tools.py call_build_report --report_header {params.report_header} --report_file_name {REPORT_FILE}
+        """
+
+
+rule create_spike_dir:
+    output: "./spikes"
+    shell: "mkdir -p ./spikes/bam ./spikes/counts"
+
+rule create_mapped_dir:
+    output: "./mapped"
+    shell: "mkdir -p ./mapped/bam ./mapped/counts"
+
+
+#rule create_scratch_dir: 
+    #output: "{SCRATCH_DIR}"
+    #shell: "mkdir -p {SCRATCH_DIR}"
+  
